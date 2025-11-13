@@ -1,0 +1,255 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Supplier master data
+model Supplier {
+  id                    String   @id @default(cuid())
+  name                  String   @unique
+  code                  String   @unique
+  country               String
+  region                String
+  performanceScore      Float    @default(0) // 0-100 scale
+  averageDeliveryDays   Int      @default(0)
+  onTimeDeliveryRate    Float    @default(0) // percentage
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relations
+  purchaseOrders        PurchaseOrder[]
+  performanceHistory    SupplierPerformance[]
+  delayPatterns         DelayPattern[]
+
+  @@index([country, region])
+}
+
+// Product/Category master data
+model ProductCategory {
+  id                    String   @id @default(cuid())
+  name                  String   @unique
+  code                  String   @unique
+  complexity            String   // LOW, MEDIUM, HIGH
+  averageLeadDays       Int      @default(0)
+  riskLevel             String   @default("MEDIUM") // LOW, MEDIUM, HIGH
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relations
+  purchaseOrders        PurchaseOrder[]
+  delayPatterns         DelayPattern[]
+
+  @@index([complexity, riskLevel])
+}
+
+// Historical Purchase Orders with Goods Receipt data
+model PurchaseOrder {
+  id                    String   @id @default(cuid())
+  poNumber              String   @unique
+  supplierId            String
+  supplier              Supplier @relation(fields: [supplierId], references: [id])
+  categoryId            String
+  category              ProductCategory @relation(fields: [categoryId], references: [id])
+  
+  // Order details
+  orderDate             DateTime
+  promisedDeliveryDate  DateTime
+  actualDeliveryDate    DateTime?
+  quantity              Int
+  orderValue            Decimal  @db.Decimal(12, 2)
+  
+  // Logistics details
+  shipmentDistance      Int      // in km
+  shipmentMode          String   // AIR, SEA, ROAD, RAIL
+  originCountry         String
+  destinationCountry    String
+  
+  // Status tracking
+  status                String   @default("OPEN") // OPEN, IN_TRANSIT, DELIVERED, DELAYED, CANCELLED
+  delayDays             Int      @default(0)
+  isDelayed             Boolean  @default(false)
+  
+  // Contextual factors
+  orderVolume           Int      // number of units
+  seasonality           String   @default("NORMAL") // PEAK, NORMAL, LOW
+  marketCondition       String   @default("STABLE") // STABLE, VOLATILE, DISRUPTED
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relations
+  etaPredictions        ETAPrediction[]
+  alerts                DeliveryAlert[]
+
+  @@index([supplierId, categoryId])
+  @@index([status, isDelayed])
+  @@index([orderDate, promisedDeliveryDate])
+}
+
+// Supplier performance metrics (historical aggregates)
+model SupplierPerformance {
+  id                    String   @id @default(cuid())
+  supplierId            String
+  supplier              Supplier @relation(fields: [supplierId], references: [id])
+  
+  // Time period
+  month                 Int
+  year                  Int
+  
+  // Performance metrics
+  totalOrders           Int
+  onTimeOrders          Int
+  delayedOrders         Int
+  averageDelayDays      Float
+  onTimePercentage      Float
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([supplierId, month, year])
+  @@index([supplierId, year, month])
+}
+
+// Delay patterns identified by AI analysis
+model DelayPattern {
+  id                    String   @id @default(cuid())
+  supplierId            String
+  supplier              Supplier @relation(fields: [supplierId], references: [id])
+  categoryId            String
+  category              ProductCategory @relation(fields: [categoryId], references: [id])
+  
+  // Pattern characteristics
+  triggerCondition      String   // e.g., "ORDER_VOLUME > 50"
+  minOrderVolume        Int?
+  maxOrderVolume        Int?
+  minOrderValue         Decimal? @db.Decimal(12, 2)
+  maxOrderValue         Decimal? @db.Decimal(12, 2)
+  shipmentMode          String?
+  seasonality           String?
+  
+  // Pattern impact
+  averageDelayDays      Int
+  delayProbability      Float    // 0-1 scale
+  confidence            Float    // 0-1 scale (based on historical data)
+  occurrenceCount       Int      // how many times this pattern occurred
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([supplierId, categoryId])
+}
+
+// ETA Predictions for open/new POs
+model ETAPrediction {
+  id                    String   @id @default(cuid())
+  poId                  String
+  purchaseOrder         PurchaseOrder @relation(fields: [poId], references: [id])
+  
+  // Prediction details
+  predictedDeliveryDate DateTime
+  confidenceScore       Float    // 0-1 scale
+  delayProbability      Float    // 0-1 scale
+  estimatedDelayDays    Int      @default(0)
+  
+  // Prediction factors
+  riskFactors           String[] // array of identified risk factors
+  mitigationActions     String[] // recommended actions
+  
+  // Model metadata
+  modelVersion          String
+  predictionDate        DateTime @default(now())
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([poId])
+  @@index([delayProbability])
+}
+
+// Alerts for at-risk deliveries
+model DeliveryAlert {
+  id                    String   @id @default(cuid())
+  poId                  String
+  purchaseOrder         PurchaseOrder @relation(fields: [poId], references: [id])
+  
+  // Alert details
+  alertType             String   // DELAY_RISK, CRITICAL_DELAY, SUPPLIER_ISSUE, LOGISTICS_ISSUE
+  severity              String   // LOW, MEDIUM, HIGH, CRITICAL
+  message               String
+  
+  // Recommended actions
+  recommendedActions    String[]
+  
+  // Alert status
+  status                String   @default("ACTIVE") // ACTIVE, ACKNOWLEDGED, RESOLVED
+  acknowledgedAt        DateTime?
+  resolvedAt            DateTime?
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([poId, status])
+  @@index([severity, alertType])
+}
+
+// Historical delay analysis for pattern learning
+model DelayAnalysis {
+  id                    String   @id @default(cuid())
+  
+  // Analysis period
+  analysisDate          DateTime @default(now())
+  
+  // Aggregate metrics
+  totalOrdersAnalyzed   Int
+  delayedOrdersCount    Int
+  averageDelayDays      Float
+  maxDelayDays          Int
+  
+  // Top delay factors
+  topDelayFactors       String[] // JSON array of factors
+  topDelayedSuppliers   String[] // JSON array of supplier IDs
+  topDelayedCategories  String[] // JSON array of category IDs
+  
+  // Insights
+  insights              String   // JSON string with detailed insights
+  
+  createdAt             DateTime @default(now())
+
+  @@index([analysisDate])
+}
+
+// User/Team management for the application
+model User {
+  id                    String   @id @default(cuid())
+  email                 String   @unique
+  name                  String
+  role                  String   @default("VIEWER") // ADMIN, MANAGER, VIEWER
+  department            String?  // PROCUREMENT, LOGISTICS, FINANCE
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([role, department])
+}
+
+// Audit log for tracking changes
+model AuditLog {
+  id                    String   @id @default(cuid())
+  userId                String?
+  action                String   // CREATE, UPDATE, DELETE, ACKNOWLEDGE_ALERT, etc.
+  entityType            String   // PurchaseOrder, DeliveryAlert, etc.
+  entityId              String
+  changes               String   // JSON string with before/after values
+  
+  createdAt             DateTime @default(now())
+
+  @@index([userId, action])
+  @@index([entityType, entityId])
+}
